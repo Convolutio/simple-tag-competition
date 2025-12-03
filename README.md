@@ -8,9 +8,9 @@ In this competition, you will train the **predator** agent only. Your predator w
 
 ## Environment
 
-- **Simple Tag**: A cooperative/competitive multi-agent environment where predators try to catch prey
-- Multiple predators chase multiple prey in a continuous 2D space
-- Predators are rewarded for catching prey; prey are rewarded for avoiding capture
+- **Simple Tag**: A cooperative/competitive multi-agent environment where three predators try to catch a prey
+- Three predators chase a single prey in a continuous 2D space
+- Predators are rewarded for catching prey; the prey is rewarded for avoiding capture
 
 ## Submission Guidelines
 
