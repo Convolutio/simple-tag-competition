@@ -2,7 +2,9 @@
 PPO agent for the predator.
 """
 
+from typing import cast
 import torch
+from torch.distributions.categorical import Categorical
 import torch.nn as nn
 import numpy as np
 from pathlib import Path
@@ -73,30 +75,114 @@ class StudentAgent:
         pass
 
 
-# Example Neural Network Architecture (customize as needed)
-class ExampleNetwork(nn.Module):
+class AdversaryTeamAgent(nn.Module):
+    """PPO Agent with both the Critic and Actor sub-agents.
+
+    The behavior is the following:
+      - the first adversary acts according to a basically learnt behavior
+      - the second adversary acts also according to the action and observations
+        of the first adversary
+      - the others adversaries acts also according the already-taken decisions
+        and the already-seen observations
+
+    This is possilbe thanks to contextual information (hidden states) that are
+    passed on-the-fly. A RNN layer will be used for that (no need for a LSTM as
+    the length of the sequence is the number of adversary agents, so around 3).
+
     """
-    Example neural network for the agent.
-    Students should replace this with their own architecture.
-    
-    For discrete action space:
-    - Input: observation (16 dims for prey, 14 dims for predator)
-    - Output: 5 action logits (for Discrete(5) action space)
-    """
-    
-    def __init__(self, input_dim, output_dim=5, hidden_dim=128):
-        super(ExampleNetwork, self).__init__()
-        self.network = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, output_dim)
-            # No activation on output - these are logits for discrete actions
+    def __init__(self,
+                 observation_space_size=14,
+                 action_space_size=5,
+                 hidden_dim=512):
+        super().__init__()
+        input_dim = observation_space_size + action_space_size
+
+        # Network
+        self.team_observations_encoder = nn.RNN(input_dim, hidden_dim, num_layers=2, nonlinearity="tanh", batch_first=False)
+        self.team_decisions_encoder = nn.RNN(input_dim, hidden_dim, num_layers=2, nonlinearity="tanh", batch_first=False)
+        # Actor and Critic agents
+        self.actor = self._layer_init(nn.Linear(hidden_dim, action_space_size), std=0.01)
+        self.critic = self._layer_init(nn.Linear(hidden_dim, 1))
+
+    def _layer_init(self, layer, std=np.sqrt(2), bias_const=0.0):
+        torch.nn.init.orthogonal_(layer.weight, std)
+        torch.nn.init.constant_(layer.bias, bias_const)
+        return layer
+
+    def encode_team_information(self,
+                                to: torch.Tensor,
+                                ta: torch.Tensor | None=None,
+                                to_context: torch.Tensor | None=None,
+                                ta_context: torch.Tensor | None=None):
+        """
+        :param to: Team previous observations. Shape (L, B, observation_space_size)
+        :param ta: Team previous actions. Shape (L-1, B, action_space_size) or None if L equals 1
+        :param to_context: Encoding of already-seen observations (not in `to` param). Shape (B, hidden_dim)
+        :param ta_context: Encoding of already-taken actions (not in `ta` param). Shape (B, hidden_dim)
+
+        :return team_information: Shape (L, B, hidden_dim)
+        :return context:
+          * new_to_context: The encoded observations. Shape (B, hidden_dim)
+          * new_ta_context: The encoded actions. Shape (B, hidden_dim) or None if no action has been provided (meaning no team action has been taken so the first agent is taking a decision)
+        """
+        to_hidden_states, new_to_context = cast(
+            tuple[torch.Tensor, torch.Tensor],
+            self.team_observations_encoder(
+                to, to_context
+            )
         )
-    
-    def forward(self, x):
-        return self.network(x)
+        ta_hidden_states, new_ta_context = (
+            cast(
+                tuple[torch.Tensor, torch.Tensor],
+                self.team_decisions_encoder(
+                    ta,
+                    ta_context)
+            )
+            if ta is not None else (None, None)
+        )
+        team_information = (
+            to_hidden_states + ta_hidden_states
+            if ta_hidden_states is not None
+            else to_hidden_states
+        )
+        return team_information, (new_to_context, new_ta_context)
+
+
+    def get_value(self,
+                  to: torch.Tensor,
+                  ta: torch.Tensor | None=None,
+                  to_context: torch.Tensor | None=None,
+                  ta_context: torch.Tensor | None=None,
+                  ):
+        hidden, _ = self.encode_team_information(to, ta, to_context, ta_context)
+        return self.critic(hidden)
+
+    def get_action_and_value(self,
+                             to: torch.Tensor,
+                             ta: torch.Tensor | None=None,
+                             to_context: torch.Tensor | None=None,
+                             ta_context: torch.Tensor | None=None,
+                             action=None):
+        """
+        Arguments:
+           see the `encode_team_information` method
+
+        :param action: If provided, force this action to be chosen and return the probs and logits for this action 
+
+        :return action: The chosen action for the adversary agent
+        :return context: See the `encode_team_information` method
+        :return log_probs: The log probability of the chosen action
+        :return entropy: The entropy of the action probabilities
+        :return critic: The critic value
+        """
+        hidden, context = self.encode_team_information(to, ta, to_context,
+                                                       ta_context)
+
+        logits = self.actor(hidden)
+        probs = Categorical(logits=logits)
+        if action is None:
+            action = probs.sample()
+        return action, context, probs.log_prob(action), probs.entropy(), self.critic(hidden)
 
 
 if __name__ == "__main__":
