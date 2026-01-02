@@ -20,21 +20,23 @@ from agent import AdversaryTeamAgent
 from prey_agent import StudentAgent as PreyAgent
 
 
+def batchify_obs(obs: dict, device, agent_order: list[str]) -> torch.Tensor:
+    """Converts SimpleTag observations to batch of torch arrays.
 
-def batchify_obs(obs, device):
-    """Converts PZ style observations to batch of torch arrays."""
+    :return obs_b: shape (L, B, observation_feat_nb), with B equaling 1.
+    """
     # convert to list of np arrays
-    obs = np.stack([obs[a] for a in obs], axis=0)
-    # transpose to be (batch, channel, height, width)
-    obs = obs.transpose(0, -1, 1, 2)
+    obs_b = np.stack([obs[agent_id] for agent_id in agent_order], axis=0)
     # convert to torch
-    obs = torch.tensor(obs).to(device)
+    obs_b = torch.tensor(obs).to(device)
 
-    return obs
+    return obs_b
 
 
 def batchify(x, device):
-    """Converts PZ style returns to batch of torch arrays."""
+    """Converts SimpleTag style returns to batch of torch arrays."""
+    # TODO:
+
     # convert to list of np arrays
     x = np.stack([x[a] for a in x], axis=0)
     # convert to torch
@@ -43,12 +45,32 @@ def batchify(x, device):
     return x
 
 
-def unbatchify(x, env):
-    """Converts np array to PZ style arguments."""
+def unbatchify(x, agent_order: list[str]) -> dict:
+    """Converts np array to SimpleTag style arguments."""
     x = x.cpu().numpy()
-    x = {a: x[i] for i, a in enumerate(env.possible_agents)}
+    return { agent_id: x[k] for k, agent_id in enumerate(agent_order) }
 
-    return x
+
+def get_action_and_value(
+        observations: torch.Tensor,
+        env: ParallelEnv,
+        prey: PreyAgent,
+        adversaryTeam: AdversaryTeamAgent,
+):
+    actions, logprobs, values = {}, {}, {}
+    for agent_id in env.agents:
+        obs = observations[agent_id]
+
+        # Determine if this is a predator (adversary)
+        is_predator = "adversary" in agent_id
+
+        if is_predator:
+
+        else:
+            # Random prey agent for testing
+            action = prey.get_action(obs, agent_id)
+
+        actions[agent_id] = action
 
 
 if __name__ == "__main__":
@@ -59,22 +81,28 @@ if __name__ == "__main__":
     clip_coef = 0.1
     gamma = 0.99
     batch_size = 32
-    stack_size = 4
-    frame_size = (64, 64)
     # TODO: lengthen the episodes (e.g. to 125)
     max_cycles = 25  # Short episodes for testing
     total_episodes = 2
 
     """ ENV SETUP """
+    num_agents = 3  # 3 adversaries
     env = cast(ParallelEnv, simple_tag_v3.parallel_env(
         num_good=1,  # Number of prey
-        num_adversaries=3,  # Number of predators
+        num_adversaries=num_agents,  # Number of predators
         num_obstacles=2,
         max_cycles=max_cycles,
         continuous_actions=False
     ))
-    num_agents = len(env.possible_agents)  # 4
-    preyAgent = PreyAgent()
+    # fix an order for looping over the adversaries
+    agent_ids: list[str] = [
+        agent_id for agent_id in env.agents if "adversary" in agent_id
+    ]
+    prey_agent = PreyAgent()
+    prey_id: str = [
+        agent_id for agent_id in env.agents
+        if "adversary" not in agent_id
+    ][0]
     num_actions_per_adversary = 5  # cf. documentation of simple_tag_v3
     observation_size = 14  # cf. documentation of simple_tag_v3
 
@@ -85,7 +113,7 @@ if __name__ == "__main__":
     """ ALGO LOGIC: EPISODE STORAGE"""
     end_step = 0
     total_episodic_return = 0
-    rb_obs = torch.zeros((max_cycles, num_agents, stack_size, *frame_size)).to(device)
+    rb_obs = torch.zeros((max_cycles, num_agents, observation_size)).to(device)
     rb_actions = torch.zeros((max_cycles, num_agents)).to(device)
     rb_logprobs = torch.zeros((max_cycles, num_agents)).to(device)
     rb_rewards = torch.zeros((max_cycles, num_agents)).to(device)
@@ -105,14 +133,21 @@ if __name__ == "__main__":
             # each episode has num_steps
             for step in range(0, max_cycles):
                 # rollover the observation
-                obs = batchify_obs(next_obs, device)
+                obs = batchify_obs(next_obs, device, agent_ids)
 
                 # get action from the agent
                 actions, logprobs, _, values = agent.get_action_and_value(obs)
 
+                # let the prey act
+                prey_obs = next_obs[prey_id]
+                prey_action = prey_agent.get_action(prey_obs, prey_id)
+
+                # render the agents' actions
+                env_actions = { prey_id: prey_action, **unbatchify(actions, agent_ids) }
+
                 # execute the environment and log data
                 next_obs, rewards, terms, truncs, infos = env.step(
-                    unbatchify(actions, env)
+                    unbatchify(actions, agent_ids)
                 )
 
                 # add to episode storage

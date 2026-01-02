@@ -316,6 +316,31 @@ class AdversaryTeamAgent(nn.Module):
         self._team_action_ctx = new_action_ctx
         return new_action, log_probs, entropy, critic_value
 
+
+    def get_on_the_fly_action_and_value_for_team(
+        self,
+        team_observations: torch.Tensor,
+        team_agent_ids: list[str]
+    ):
+        """
+
+        :param team_observations: shape (L, B, observation_feat_nb)
+        :param team_agent_ids: list of L elements
+        """
+        team_size, b, _ = team_observations.shape
+        actions = torch.empty((team_size, b)).to(team_observations.device)
+        log_probs = torch.empty((team_size, b)).to(team_observations.device) 
+        entropy = torch.empty((team_size, b, 5))  # TODO: rename in action_nb
+        critic_values = torch.empty((team_size, b)).to(team_observations.device)
+
+        # TODO: zip and concatenate
+        for k, agent_id in enumerate(team_agent_ids):
+            action, lp, entr, crit = self.forward_for_agent(team_observations[k], agent_id)
+            actions[k] = action
+            log_probs[k] = lp
+            entropy[k] = entropy
+
+
 __global_team_agent: AdversaryTeamAgent | None = None
 
 def get_global_team_agent() -> AdversaryTeamAgent | None:
