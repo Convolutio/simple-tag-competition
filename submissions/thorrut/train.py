@@ -17,6 +17,7 @@ import torch.optim as optim
 from pettingzoo.mpe import simple_tag_v3
 from pettingzoo.utils.env import ParallelEnv
 from agent import AdversaryTeamAgent
+from prey_agent import StudentAgent as PreyAgent
 
 
 
@@ -73,11 +74,12 @@ if __name__ == "__main__":
         continuous_actions=False
     ))
     num_agents = len(env.possible_agents)  # 4
+    preyAgent = PreyAgent()
     num_actions_per_adversary = 5  # cf. documentation of simple_tag_v3
     observation_size = 14  # cf. documentation of simple_tag_v3
 
     """ LEARNER SETUP """
-    agent = AdversaryTeamAgent(num_actions=num_actions_per_adversary).to(device)
+    agent = AdversaryTeamAgent(observation_size, num_actions_per_adversary).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=0.001, eps=1e-5)
 
     """ ALGO LOGIC: EPISODE STORAGE"""

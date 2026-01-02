@@ -78,11 +78,10 @@ class AdversaryTeamAgent(nn.Module):
     """PPO Agent with both the Critic and Actor sub-agents.
 
     The behavior is the following:
-      - the first adversary acts according to a basically learnt behavior
-      - the second adversary acts also according to the action and observations
-        of the first adversary
+      - the first adversary acts according to its observations
+      - the second adversary acts also according to the action of the first
+        adversary
       - the others adversaries acts also according the already-taken decisions
-        and the already-seen observations
 
     This is possilbe thanks to contextual information (hidden states) that are
     passed on-the-fly. A RNN layer will be used for that (no need for a LSTM as
@@ -90,17 +89,30 @@ class AdversaryTeamAgent(nn.Module):
 
     """
     def __init__(self,
-                 observation_space_size=14,
-                 action_space_size=5,
-                 hidden_dim=512):
+                 observation_feat_nb=14,
+                 action_number=5,
+                 hidden_dim=512,
+                 action_embedding_dim=2,
+                 ):
         super().__init__()
-        input_dim = observation_space_size + action_space_size
+        input_dim = observation_feat_nb
 
         # Network
-        self.team_observations_encoder = nn.RNN(input_dim, hidden_dim, num_layers=2, nonlinearity="tanh", batch_first=False)
-        self.team_decisions_encoder = nn.RNN(input_dim, hidden_dim, num_layers=2, nonlinearity="tanh", batch_first=False)
+        self.agent_observation_encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+        )
+        self.team_decisions_encoder = nn.Sequential(
+            nn.Embedding(action_number, action_embedding_dim),
+            nn.RNN(
+                action_embedding_dim, hidden_dim, num_layers=2,
+                nonlinearity="tanh", batch_first=False
+            )
+        )
         # Actor and Critic agents
-        self.actor = self._layer_init(nn.Linear(hidden_dim, action_space_size), std=0.01)
+        self.actor = self._layer_init(nn.Linear(hidden_dim, action_number), std=0.01)
         self.critic = self._layer_init(nn.Linear(hidden_dim, 1))
 
     def _layer_init(self, layer, std=np.sqrt(2), bias_const=0.0):
@@ -108,62 +120,132 @@ class AdversaryTeamAgent(nn.Module):
         torch.nn.init.constant_(layer.bias, bias_const)
         return layer
 
-    def encode_team_information(self,
-                                to: torch.Tensor,
-                                ta: torch.Tensor | None=None,
-                                to_context: torch.Tensor | None=None,
-                                ta_context: torch.Tensor | None=None):
-        """
-        :param to: Team previous observations. Shape (L, B, observation_space_size)
-        :param ta: Team previous actions. Shape (L-1, B, action_space_size) or None if L equals 1
-        :param to_context: Encoding of already-seen observations (not in `to` param). Shape (B, hidden_dim)
-        :param ta_context: Encoding of already-taken actions (not in `ta` param). Shape (B, hidden_dim)
 
-        :return team_information: Shape (L, B, hidden_dim)
-        :return context:
-          * new_to_context: The encoded observations. Shape (B, hidden_dim)
-          * new_ta_context: The encoded actions. Shape (B, hidden_dim) or None if no action has been provided (meaning no team action has been taken so the first agent is taking a decision)
+    # --- ENCODING LAYER ---
+
+
+    def encode_on_the_fly_team_information(
+        self,
+        unit_observations: torch.Tensor,
+        previous_action: torch.Tensor | None=None,
+        prior_previous_action_ctx: torch.Tensor | None=None
+    ):
+        """Return the hidden values of the network, with contextual information.
+
+        Expect to encode the observation of one unit (evaluation/forward
+        stage), with the action of the previous unit (if the current unit is
+        not the first of the team) and the encoded context of chosen actions of
+        the prior units (if the current unit is at least the 3rd unit of the
+        team).
+
+        :param unit_observations: shape (B, observation_space_size)
+        :param previous_action: shape (B,)
+        :param prior_previous_action_ctx: shape (B, hidden_dim)
+
+        :return hidden_features: shape (B, hidden_dim)
+        :return previous_action_ctx: shape (B, hidden_dim)
         """
-        to_hidden_states, new_to_context = cast(
-            tuple[torch.Tensor, torch.Tensor],
-            self.team_observations_encoder(
-                to, to_context
-            )
-        )
-        ta_hidden_states, new_ta_context = (
+        observation_hidden_features = cast(
+            torch.Tensor,
+            self.agent_observation_encoder(unit_observations)
+        )  # shape (B, hidden_dim)
+        (
+            _,
+            previous_action_ctx  # shape (B, hidden_dim)
+        ) = (
             cast(
                 tuple[torch.Tensor, torch.Tensor],
                 self.team_decisions_encoder(
-                    ta,
-                    ta_context)
+                    previous_action.unsqueeze(0),
+                    prior_previous_action_ctx
+                )
             )
-            if ta is not None else (None, None)
+            if previous_action is not None else (None, None)
         )
-        team_information = (
-            to_hidden_states + ta_hidden_states
-            if ta_hidden_states is not None
-            else to_hidden_states
+        hidden_features = (
+            # combine the observation features with the team action information
+            # when existing
+            observation_hidden_features + previous_action_ctx
+            if previous_action_ctx is not None
+            else observation_hidden_features
         )
-        return team_information, (new_to_context, new_ta_context)
+        return hidden_features, previous_action_ctx
 
 
-    def get_value(self,
-                  to: torch.Tensor,
-                  ta: torch.Tensor | None=None,
-                  to_context: torch.Tensor | None=None,
-                  ta_context: torch.Tensor | None=None,
-                  ) -> torch.Tensor:
-        hidden, _ = self.encode_team_information(to, ta, to_context, ta_context)
-        return self.critic(hidden)
+    def encode_team_information(
+        self,
+        team_observations: torch.Tensor,
+        chosen_actions: torch.Tensor
+    ):
+        """Return the hidden values of the network, with contextual information.
+
+        Expect to encode the observations of all the team (training stage). See
+        the `encode_on_the_fly_team_information` method for an on-the-fly usage
+        suitable for the evaluation/forward stage.
+
+        Let L be the number of units in the team.
+        The L-1 actions will be used to compute the team contextual information
+        for all the units.
+
+        :param unit_observations: Current agent's observations. Shape (L, B, observation_space_size), with L the number of units in the team (when several units are passed in the same batch)
+        :param chosen_actions: Team chosen actions. Shape (L, B)
+
+        :return team_information: Shape (L, B, hidden_dim)
+        """
+        observation_hidden_features = self.agent_observation_encoder(
+            team_observations
+        )  # shape (L, B, hidden_dim)
+        team_action_hidden_states__partial, _ = cast(
+            tuple[torch.Tensor, torch.Tensor],
+            self.team_decisions_encoder(
+                chosen_actions[:-1],
+            )
+        )  # shape (L-1, B, hidden_dim)
+        team_action_hidden_states = torch.cat(
+            (
+                # the first unit does not have any contextual information
+                # the detached zeros are neutral in the final encoding addition
+                torch.zeros_like(team_action_hidden_states__partial[0]).detach()
+                .to(team_action_hidden_states__partial.device),
+                team_action_hidden_states__partial
+            ), dim=0,
+        )  # shape (L, B, hidden_dim)
+        # combine the observation features with the team action information
+        return observation_hidden_features + team_action_hidden_states
+
+
+    # --- ACTOR CRITIC HEADS ---
+
+
+    def actor_critic_forward(self, hidden: torch.Tensor, action_s: torch.Tensor | None):
+        """Return the results of the actor and critic heads.
+
+        This function works for decisions for both one unit or the full team.
+
+        :param hidden: shape (B, hidden_dim) or (L, B, hidden_dim)
+        :param action_s: shape (B,) or (L, B)
+
+        TODO: check the shapes
+
+        :return action_s: The chosen action(s) for the adversary agent(s). Shape (B,) or (L, B)
+        :return log_probs: The log probability(ies) of the chosen action(s). Shape (B,) or (L, B)
+        :return entropy: The entropy of the action probabilities. Shape (B, action_number) or (L, B, action_number)
+        :return critic: The critic value. Shape (B,) or (L, B)
+        """
+        logits = self.actor(hidden)
+        probs = Categorical(logits=logits)
+        if action_s is None:
+            action_s = probs.sample()
+        return action_s, probs.log_prob(action_s), probs.entropy(), self.critic(hidden)
+
+
+    # --- FORWARD ---
+
 
     def get_action_and_value(self,
-                             to: torch.Tensor,
-                             ta: torch.Tensor | None=None,
-                             to_context: torch.Tensor | None=None,
-                             ta_context: torch.Tensor | None=None,
-                             action: torch.Tensor | None=None) -> tuple[
+                             team_observations: torch.Tensor,
+                             actions: torch.Tensor) -> tuple[
         torch.Tensor,
-        tuple[torch.Tensor, torch.Tensor | None],
         torch.Tensor,
         torch.Tensor,
         torch.Tensor
@@ -172,31 +254,48 @@ class AdversaryTeamAgent(nn.Module):
         Arguments:
            see the `encode_team_information` method
 
-        :param action: If provided, force this action to be chosen and return the probs and logits for this action 
+        :param action: If provided, force the actions to be chosen and return the probs and logits for these actions.
 
-        :return action: The chosen action for the adversary agent
-        :return context: See the `encode_team_information` method
-        :return log_probs: The log probability of the chosen action
-        :return entropy: The entropy of the action probabilities
-        :return critic: The critic value
+        Return:
+           see the `actor_critic_forward` method.
         """
-        hidden, context = self.encode_team_information(to, ta, to_context,
-                                                       ta_context)
 
-        logits = self.actor(hidden)
-        probs = Categorical(logits=logits)
-        if action is None:
-            action = probs.sample()
-        return action, context, probs.log_prob(action), probs.entropy(), self.critic(hidden)
+        hidden = self.encode_team_information(team_observations, actions)
+        return self.actor_critic_forward(hidden, actions)
+
+
+    def get_on_the_fly_action_and_value(
+        self,
+        unit_observations: torch.Tensor,
+        previous_action: torch.Tensor | None=None,
+        prior_previous_action_ctx: torch.Tensor | None=None
+    ):
+        """
+        Arguments:
+           see the `encode_on_the_fly_team_information` method
+
+        :return action_s: The chosen action for the adversary agent. Shape (B,)
+        :return context: The context features of the team previous action. Shape (B, hidden_dim)
+        :return log_probs: The log probability of the chosen action. Shape (B,)
+        :return entropy: The entropy of the action probabilities. Shape (B, action_number)
+        :return critic: The critic value. Shape (B,)
+        """
+        hidden, context = self.encode_on_the_fly_team_information(
+            unit_observations,
+            previous_action,
+            prior_previous_action_ctx
+        )
+        action, log_probs, entropy, critic = self.actor_critic_forward(hidden, None)
+        return action, context, log_probs, entropy, critic
+
 
     # --- TEAM Actions ---
     def start_team_step(self):
         self._first_seen_agent_in_team: str | None = None
         self._last_teammate_action: torch.Tensor | None = None
         self._team_action_ctx: torch.Tensor | None = None
-        self._team_observation_ctx: torch.Tensor | None = None
 
-    def forward_for_agent(self, agent_observation: torch.Tensor, agent_id: str, action: torch.Tensor | None=None):
+    def forward_for_agent(self, agent_observation: torch.Tensor, agent_id: str):
         if (
             self._first_seen_agent_in_team is None
             or self._first_seen_agent_in_team == agent_id
@@ -205,17 +304,16 @@ class AdversaryTeamAgent(nn.Module):
             self.start_team_step()
             self._first_seen_agent_in_team = agent_id
         # return the actions for the current adversary
-        new_action, (new_observation_ctx, new_action_ctx), log_probs, entropy, critic_value = (
-            self.get_action_and_value(agent_observation,
-                                      self._last_teammate_action,
-                                      self._team_observation_ctx,
-                                      self._team_action_ctx,
-                                      action)
+        new_action, new_action_ctx, log_probs, entropy, critic_value = (
+            self.get_on_the_fly_action_and_value(
+                agent_observation,
+                self._last_teammate_action,
+                self._team_action_ctx,
+            )
         )
         # update the context for the next adversaries
         self._last_teammate_action = new_action
         self._team_action_ctx = new_action_ctx
-        self._team_observation_ctx = new_observation_ctx
         return new_action, log_probs, entropy, critic_value
 
 __global_team_agent: AdversaryTeamAgent | None = None
