@@ -33,7 +33,7 @@ def batchify_obs(obs: dict, device, agent_order: list[str]) -> torch.Tensor:
     return obs_b
 
 
-type SimpleTagState = dict[str, np.ndarray | float | int]
+type SimpleTagState = dict[str, np.ndarray] | dict[str, float] | dict[str, int]
 
 
 def batchify(x: SimpleTagState, device, agent_order: list[str]) -> torch.Tensor:
@@ -267,23 +267,38 @@ if __name__ == "__main__":
         print("\n-------------------------------------------\n")
 
     """ RENDER THE POLICY """
-    env = pistonball_v6.parallel_env(render_mode="human", continuous=False)
-    env = color_reduction_v0(env)
-    env = resize_v1(env, 64, 64)
-    env = frame_stack_v1(env, stack_size=4)
+    env = cast(ParallelEnv, simple_tag_v3.parallel_env(
+        num_good=1,  # Number of prey
+        num_adversaries=num_agents,  # Number of predators
+        num_obstacles=2,
+        max_cycles=max_cycles,
+        continuous_actions=False
+    ))
+    # fix an order for looping over the adversaries
+    agent_ids: list[str] = [
+        agent_id for agent_id in env.agents if "adversary" in agent_id
+    ]
+    prey_agent = PreyAgent()
+    prey_id: str = [
+        agent_id for agent_id in env.agents
+        if "adversary" not in agent_id
+    ][0]
 
     agent.eval()
 
     with torch.no_grad():
         # render 5 episodes out
         for episode in range(5):
-            obs, infos = env.reset(seed=None)
-            obs = batchify_obs(obs, device)
+            env_obs, infos = env.reset(seed=None)
+            obs = batchify_obs(env_obs, device, agent_ids)
             terms = [False]
             truncs = [False]
             while not any(terms) and not any(truncs):
-                actions, logprobs, _, values = agent.get_action_and_value_for_team(obs)
-                obs, rewards, terms, truncs, infos = env.step(unbatchify(actions, env))
-                obs = batchify_obs(obs, device)
+                actions, logprobs, _, values = agent.get_on_the_fly_action_and_value_for_team(obs, agent_ids)
+                prey_action = prey_agent.get_action(env_obs[prey_id], prey_id)
+                env_obs, rewards, terms, truncs, infos = env.step(
+                    { prey_id: prey_action, **unbatchify(actions, agent_ids) }
+                )
+                obs = batchify_obs(env_obs, device, agent_ids)
                 terms = [terms[a] for a in terms]
                 truncs = [truncs[a] for a in truncs]
