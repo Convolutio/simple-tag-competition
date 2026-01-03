@@ -81,9 +81,12 @@ if __name__ == "__main__":
     clip_coef = 0.1
     gamma = 0.99
     batch_size = 32
-    # TODO: lengthen the episodes (e.g. to 125)
-    max_cycles = 25  # Short episodes for testing
-    total_episodes = 2
+    # with more max cycles, the episodic return will be higher
+    max_cycles = 25
+    # with enough total episodes, the episodic return is often better
+    # TODO: for now, episode with 0 reward are still possible, even with a big
+    # number of max_cycles
+    total_episodes = 150
 
     """ ENV SETUP """
     num_agents = 3  # 3 adversaries
