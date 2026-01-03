@@ -115,6 +115,8 @@ class AdversaryTeamAgent(nn.Module):
         self.actor = self._layer_init(nn.Linear(hidden_dim, action_number), std=0.01)
         self.critic = self._layer_init(nn.Linear(hidden_dim, 1))
 
+        self.start_team_step()
+
     def _layer_init(self, layer, std=np.sqrt(2), bias_const=0.0):
         torch.nn.init.orthogonal_(layer.weight, std)
         torch.nn.init.constant_(layer.bias, bias_const)
@@ -359,6 +361,7 @@ class AdversaryTeamAgent(nn.Module):
            (B, *). The logprobs, entropy and critic values are reduced over the
            team's results (so their shape is (B,)).
         """
+        self.start_team_step()
         actions, log_probs, entropy, critic_values = (
             torch.stack(outputs, dim=0).to(outputs[0].device)
             for outputs in cast(

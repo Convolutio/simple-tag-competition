@@ -28,7 +28,7 @@ def batchify_obs(obs: dict, device, agent_order: list[str]) -> torch.Tensor:
     # convert to list of np arrays
     obs_b = np.stack([obs[agent_id] for agent_id in agent_order], axis=0)
     # convert to torch
-    obs_b = torch.tensor(obs).to(device)
+    obs_b = torch.tensor(obs_b).to(device)
 
     return obs_b
 
@@ -93,15 +93,17 @@ if __name__ == "__main__":
         max_cycles=max_cycles,
         continuous_actions=False
     ))
-    # fix an order for looping over the adversaries
-    agent_ids: list[str] = [
-        agent_id for agent_id in env.agents if "adversary" in agent_id
-    ]
-    prey_agent = PreyAgent()
-    prey_id: str = [
-        agent_id for agent_id in env.agents
-        if "adversary" not in agent_id
-    ][0]
+    def get_agents_from_rest_env(env: ParallelEnv):
+        # fix an order for looping over the adversaries
+        agent_ids: list[str] = [
+            agent_id for agent_id in env.agents if "adversary" in agent_id
+        ]
+        prey_agent = PreyAgent()
+        prey_id: str = [
+            agent_id for agent_id in env.agents
+            if "adversary" not in agent_id
+        ][0]
+        return agent_ids, prey_agent, prey_id
     num_actions_per_adversary = 5  # cf. documentation of simple_tag_v3
     observation_size = 14  # cf. documentation of simple_tag_v3
 
@@ -128,6 +130,7 @@ if __name__ == "__main__":
         with torch.no_grad():
             # collect observations and convert to batch of torch tensors
             next_obs, info = env.reset(seed=None)
+            agent_ids, prey_agent, prey_id = get_agents_from_rest_env(env)
             # reset the episodic return
             total_episodic_return = 0
 
@@ -274,15 +277,6 @@ if __name__ == "__main__":
         max_cycles=max_cycles,
         continuous_actions=False
     ))
-    # fix an order for looping over the adversaries
-    agent_ids: list[str] = [
-        agent_id for agent_id in env.agents if "adversary" in agent_id
-    ]
-    prey_agent = PreyAgent()
-    prey_id: str = [
-        agent_id for agent_id in env.agents
-        if "adversary" not in agent_id
-    ][0]
 
     agent.eval()
 
@@ -290,6 +284,7 @@ if __name__ == "__main__":
         # render 5 episodes out
         for episode in range(5):
             env_obs, infos = env.reset(seed=None)
+            agent_ids, prey_agent, prey_id = get_agents_from_rest_env(env)
             obs = batchify_obs(env_obs, device, agent_ids)
             terms = [False]
             truncs = [False]
