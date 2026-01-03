@@ -209,7 +209,8 @@ class AdversaryTeamAgent(nn.Module):
             (
                 # the first unit does not have any contextual information
                 # the detached zeros are neutral in the final encoding addition
-                torch.zeros_like(team_action_hidden_states__partial[0]).detach()
+                torch.zeros_like(team_action_hidden_states__partial[0])
+                .unsqueeze(0).detach()
                 .to(team_action_hidden_states__partial.device),
                 team_action_hidden_states__partial
             ), dim=0,
@@ -288,7 +289,6 @@ class AdversaryTeamAgent(nn.Module):
            See the `actor_critic_forward` method. The logprobs, entropy and
            critic values are reduced over the team's results.
         """
-
         hidden = self.encode_team_information(team_observations, actions)
         return self._actor_critic_team_reduction(
             *self.actor_critic_forward(hidden, actions)

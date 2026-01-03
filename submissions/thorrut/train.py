@@ -161,9 +161,9 @@ if __name__ == "__main__":
                                             agent_ids).sum(dim=0)[0]
                 rb_terms[step] = batchify(terms, device,
                                           agent_ids).max(dim=0)[0]
-                rb_actions[step] = actions
-                rb_logprobs[step] = logprobs
-                rb_values[step] = values
+                rb_actions[step] = actions[:, 0]
+                rb_logprobs[step] = logprobs[0]
+                rb_values[step] = values[0]
 
                 # compute episodic return
                 total_episodic_return += rb_rewards[step].cpu().numpy()
