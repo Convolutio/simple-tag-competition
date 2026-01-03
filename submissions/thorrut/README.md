@@ -59,3 +59,12 @@ individual observations, those features from the observations of the first
 predator are passed through the critic layer head.
 
 In this setting, we have at each step one classical PPO agent ready to learn.
+
+## Experimental notes
+
+A model trained on quite enough episodes (200) with enough steps (cycles) per
+epochs is three times better than a model trained on 800 episodes and 25 steps
+per episode.
+
+32.400 as average evaluation score (so the prey is touched once in the average
+cases).
